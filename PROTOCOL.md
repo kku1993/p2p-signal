@@ -109,7 +109,7 @@ unprotected room. `max_clients` values `< 2` are coerced up to `2`.
 ```json
 {
   "room_id": "K7Q2P",
-  "host_token": "9f3a1c...48 hex chars"
+  "host_token": "9f3a1c...64 hex chars"
 }
 ```
 
@@ -123,7 +123,13 @@ unprotected room. `max_clients` values `< 2` are coerced up to `2`.
 
 The `room_id` is 5 characters from the alphabet `ABCDEFGHJKMNPQRSTUVWXYZ23456789`
 (no `0`/`O`/`1`/`I`/`L` to avoid ambiguity when read aloud). The `host_token` is
-48 hex characters (24 random bytes).
+64 hex characters (32 random bytes, 256 bits of entropy).
+
+The server does **not** store the plaintext `host_token`. It retains only the
+hex-encoded SHA-256 digest of the token and verifies presented tokens with a
+constant-time comparison, so a process memory dump cannot reveal usable tokens.
+The plaintext token is returned exactly once, in this response, and must be
+kept by the host.
 
 ### `GET /v1/ws/<room-id>` — open a WebSocket
 
@@ -391,7 +397,7 @@ send buffer fills (the message is dropped, not the connection).
 | Per-peer send buffer        | 64 messages |
 | Room id length              | 5 chars    |
 | Peer id length              | 6 chars    |
-| Host token length           | 48 hex chars |
+| Host token length           | 64 hex chars (256-bit); stored as SHA-256 digest |
 
 ## Reference client pseudocode
 

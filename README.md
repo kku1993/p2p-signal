@@ -1,8 +1,7 @@
 # p2p-signal
 
 A minimal WebSocket signaling server for establishing peer-to-peer WebRTC
-connections. Translated from the original TypeScript implementation in
-`index.ts` into Go, with the following additions:
+connections.
 
 - **HTTP room creation**: `POST /v1/rooms` returns a random room id (and a
   one-time host token) before any WebSocket is opened.

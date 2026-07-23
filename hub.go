@@ -2,6 +2,9 @@ package main
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"sync"
 )
 
@@ -13,7 +16,7 @@ const (
 	roomIDLen    = 5
 	peerIDLen    = 6
 	defaultMax   = 2
-	tokenRandLen = 24 // bytes -> 32 base64-ish chars
+	tokenRandLen = 32 // bytes -> 64 hex chars (256-bit host token)
 )
 
 // Hub owns the set of active rooms. It is safe for concurrent use.
@@ -26,15 +29,18 @@ func newHub() *Hub {
 	return &Hub{rooms: make(map[string]*Room)}
 }
 
-// CreateRoom allocates a new room with a unique id and host token.
-func (h *Hub) CreateRoom(password string, maxClients int) (*Room, error) {
+// CreateRoom allocates a new room with a unique id and host token. It returns
+// the room and the plaintext host token (returned once to the caller so it can
+// be sent to the host); only the SHA-256 hash of the token is retained by the
+// room, so a memory dump does not reveal usable tokens.
+func (h *Hub) CreateRoom(password string, maxClients int) (*Room, string, error) {
 	if maxClients < 2 {
 		maxClients = defaultMax
 	}
 	for attempts := 0; attempts < 32; attempts++ {
 		id, err := randID(roomIDLen)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		h.mu.Lock()
 		if _, ok := h.rooms[id]; ok {
@@ -44,20 +50,20 @@ func (h *Hub) CreateRoom(password string, maxClients int) (*Room, error) {
 		token, err := randToken()
 		if err != nil {
 			h.mu.Unlock()
-			return nil, err
+			return nil, "", err
 		}
 		r := &Room{
-			ID:         id,
-			Password:   password,
-			MaxClients: maxClients,
-			HostToken:  token,
-			clients:    make(map[string]*Client),
+			ID:            id,
+			Password:      password,
+			MaxClients:    maxClients,
+			HostTokenHash: hashToken(token),
+			clients:       make(map[string]*Client),
 		}
 		h.rooms[id] = r
 		h.mu.Unlock()
-		return r, nil
+		return r, token, nil
 	}
-	return nil, errRoomCollision
+	return nil, "", errRoomCollision
 }
 
 // Room returns the room with the given id, or nil if it does not exist.
@@ -77,10 +83,10 @@ func (h *Hub) remove(id string) {
 
 // Room is a signaling room hosting up to MaxClients peers.
 type Room struct {
-	ID         string
-	Password   string
-	MaxClients int
-	HostToken  string
+	ID            string
+	Password      string
+	MaxClients    int
+	HostTokenHash string // hex(SHA-256(host_token)); plaintext token is not stored
 
 	mu      sync.Mutex
 	hostID  string // peer id of the host ("" until host connects)
@@ -103,7 +109,7 @@ func (r *Room) Admit(c *Client, hostToken, password string) (peerID string, exis
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	isHost := hostToken != "" && hostToken == r.HostToken
+	isHost := hostToken != "" && verifyHostToken(hostToken, r.HostTokenHash)
 	if hostToken != "" && !isHost {
 		return "", nil, &errVal{"invalid host token"}
 	}
@@ -219,7 +225,8 @@ func randID(n int) (string, error) {
 	return string(out), nil
 }
 
-// randToken returns a opaque host token.
+// randToken returns an opaque host token (plaintext). It is returned to the
+// caller exactly once via the HTTP response; only its SHA-256 hash is stored.
 func randToken() (string, error) {
 	buf := make([]byte, tokenRandLen)
 	if _, err := rand.Read(buf); err != nil {
@@ -232,4 +239,22 @@ func randToken() (string, error) {
 		out[i*2+1] = hex[b&0x0f]
 	}
 	return string(out), nil
+}
+
+// hashToken returns the lowercase hex SHA-256 digest of a host token. This is
+// what the room stores; the plaintext token is never retained.
+func hashToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+// verifyHostToken reports whether candidate hashes to the stored digest. The
+// comparison is constant-time to avoid leaking information about the digest via
+// timing. An empty stored digest matches nothing.
+func verifyHostToken(candidate, storedHash string) bool {
+	if storedHash == "" {
+		return false
+	}
+	got := hashToken(candidate)
+	return subtle.ConstantTimeCompare([]byte(got), []byte(storedHash)) == 1
 }

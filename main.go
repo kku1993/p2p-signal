@@ -69,14 +69,14 @@ func handleCreateRoom(hub *Hub) http.HandlerFunc {
 				return
 			}
 		}
-		room, err := hub.CreateRoom(req.Password, req.MaxClients)
+		room, token, err := hub.CreateRoom(req.Password, req.MaxClients)
 		if err != nil {
 			http.Error(w, "could not create room", http.StatusInternalServerError)
 			return
 		}
 		writeJSON(w, http.StatusCreated, CreateRoomResponse{
 			RoomID:    room.ID,
-			HostToken: room.HostToken,
+			HostToken: token,
 		})
 	}
 }

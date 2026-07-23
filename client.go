@@ -164,6 +164,14 @@ func (c *Client) writePump() {
 
 // teardown removes the client from its room, notifies survivors, and shuts down
 // the sendCh channel. Safe to call once (from readPump's defer).
+//
+// Room destruction policy:
+//   - No persistence + host leaves: destroy the room entirely (memory + store).
+//   - Persistence + host leaves + no guests: evict from memory, keep the store
+//     record so the host can reconnect with the same token.
+//   - Persistence + host leaves + guests remain: keep the room alive in memory
+//     and store; guests stay connected and the host can reconnect.
+//   - Last guest leaves and host already gone: destroy the room entirely.
 func (c *Client) teardown() {
 	if c.Room == nil {
 		// Never admitted (e.g. bad room/password). Just close the sendCh channel.
@@ -173,15 +181,26 @@ func (c *Client) teardown() {
 		c.sendMu.Unlock()
 		return
 	}
-	remaining, destroy := c.Room.Remove(c)
+	remaining, hostLeft := c.Room.Remove(c)
 	for _, id := range remaining {
 		if peer := c.Room.Client(id); peer != nil {
 			peer.send(&ServerOut{Type: "peer-left", PeerID: c.ID})
 		}
 	}
-	if destroy {
+	switch {
+	case hostLeft && c.hub.store == nil:
+		// No persistence: host departure destroys the room.
+		c.hub.remove(c.Room.ID)
+	case hostLeft && len(remaining) == 0:
+		// Persistence enabled, no guests: evict from memory but keep the
+		// store record so the host can reconnect.
+		c.hub.removeMemOnly(c.Room.ID)
+	case !hostLeft && len(remaining) == 0:
+		// Last guest left and host already gone: room is completely dead.
 		c.hub.remove(c.Room.ID)
 	}
+	// else: host left with guests (persisted) — keep room alive for reconnection;
+	//   or guest left with peers remaining — room stays as-is.
 	c.sendMu.Lock()
 	c.closed = true
 	close(c.sendCh)

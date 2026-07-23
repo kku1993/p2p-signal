@@ -51,15 +51,17 @@ Key properties:
 - A room may optionally be protected by a **password** that guests must supply.
 - A room has a **max clients** limit (default `2`, configurable up to any
   `>= 2` value).
-- The host must be the first peer to connect. When the host disconnects, the
-  room is destroyed and all remaining peers are notified.
+- The host must be the first peer to connect. When the host disconnects:
+  - **Without persistence** (default): the room is destroyed and all remaining
+    peers are notified with `peer-left`.
+  - **With persistence**: the room stays alive. The host can reconnect with the
+    same `host_token`. See [Peer / host departure](#peer--host-departure).
 - By default the server keeps all state in memory for the lifetime of the room.
   When optional persistent storage is enabled (see
   [Configuration & deployment](#configuration--deployment)), room metadata
   (id, password, max_clients, host-token hash) is written to disk so a host can
   reconnect to the same room id with its original host token after a server
-  crash or restart. Intentional host departure still destroys the room
-  permanently.
+  crash, restart, or graceful disconnect.
 
 ## Transport
 
@@ -356,10 +358,20 @@ ICE candidates are exchanged per-pair using the `to`/`from` addressing.
 **Guest leaves.** Remaining peers (including the host) receive
 `{"type":"peer-left","peer_id":"<departing-guest>"}`. The room stays alive.
 
-**Host leaves.** Every remaining peer receives
+**Host leaves (no persistence).** Every remaining peer receives
 `{"type":"peer-left","peer_id":"<host-id>"}` and the room is destroyed. Any
 further `GET /v1/ws/<id>` for that room id returns `404`. Clients should treat
 host departure as termination of the session.
+
+**Host leaves (persistence enabled).** Remaining peers receive
+`{"type":"peer-left","peer_id":"<host-id>"}` but the room is **not** destroyed.
+The room metadata stays in the store and the host can reconnect to the same
+room id with its original `host_token`. If guests were still connected, the
+room stays live in memory and the host can rejoin immediately; guests will
+receive a `peer-joined` for the reconnected host. If no guests were connected,
+the room is evicted from memory but rehydrated from the store on the next
+`GET /v1/ws/<id>`. The room is only permanently destroyed when all peers
+(including the host) have left and the room is empty.
 
 ## Close codes
 
@@ -407,8 +419,12 @@ When a store directory is configured:
   original `host_token`. The server rehydrates the room from disk on first
   access.
 - Guests can then join as usual once the host has reconnected.
-- Intentional host departure (graceful disconnect) still destroys the room and
-  deletes the persisted record.
+- If the host disconnects gracefully (without a crash), the room is **not**
+  destroyed. The host can reconnect with the same `host_token`, and any guests
+  still connected remain in the room. The room is only permanently destroyed
+  when all peers (host + guests) have left and the room is empty.
+- Without persistence, host departure destroys the room immediately (the
+  original behavior).
 - Existing WebRTC connections between peers are unaffected by a signaling
   server restart; persistence only matters for re-admission and new joins.
 

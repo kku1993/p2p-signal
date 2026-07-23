@@ -152,6 +152,14 @@ func (h *Hub) remove(id string) {
 	}
 }
 
+// removeMemOnly evicts a room from the in-memory map but keeps the durable
+// store record intact, so the room can be rehydrated when the host reconnects.
+func (h *Hub) removeMemOnly(id string) {
+	h.mu.Lock()
+	delete(h.rooms, id)
+	h.mu.Unlock()
+}
+
 // Room is a signaling room hosting up to MaxClients peers.
 type Room struct {
 	ID            string
@@ -235,15 +243,16 @@ func (r *Room) Admit(c *Client, hostToken, password string) (peerID string, exis
 	return peerID, existing, nil
 }
 
-// Remove drops a client from the room. If the host leaves, the room is marked
-// for teardown and the remaining peer ids are returned so the caller can notify
-// them. Returns whether the room should be destroyed (host left or empty).
-func (r *Room) Remove(c *Client) (remaining []string, destroy bool) {
+// Remove drops a client from the room. If the host leaves, hostID is cleared
+// so the host can reconnect with the same token when persistence is enabled.
+// Returns the remaining peer ids (so the caller can notify them) and whether
+// the departing client was the host.
+func (r *Room) Remove(c *Client) (remaining []string, hostLeft bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.clients, c.ID)
 	if c.ID == r.hostID {
-		// Host leaving tears down the whole room.
+		r.hostID = "" // allow host reconnection with the same token
 		remaining = make([]string, 0, len(r.clients))
 		for id := range r.clients {
 			remaining = append(remaining, id)
@@ -251,7 +260,7 @@ func (r *Room) Remove(c *Client) (remaining []string, destroy bool) {
 		return remaining, true
 	}
 	if len(r.clients) == 0 {
-		return nil, true
+		return nil, false
 	}
 	remaining = make([]string, 0, len(r.clients))
 	for id := range r.clients {

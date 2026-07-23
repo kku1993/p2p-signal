@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -162,7 +163,9 @@ func TestRoomPersistsAcrossRestart(t *testing.T) {
 
 // TestHostLeaveDeletesPersistedRoom: when the host leaves, the room record is
 // removed from the store so it cannot be rehydrated after a restart.
-func TestHostLeaveDeletesPersistedRoom(t *testing.T) {
+// TestHubRemoveDeletesPersistedRoom: hub.remove (full destroy) deletes from
+// both memory and store. This is the "intentional permanent destroy" path.
+func TestHubRemoveDeletesPersistedRoom(t *testing.T) {
 	dir := t.TempDir()
 	fs, err := newFileStore(dir)
 	if err != nil {
@@ -175,19 +178,221 @@ func TestHostLeaveDeletesPersistedRoom(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateRoom: %v", err)
 	}
-
-	// Record exists on disk.
 	if _, err := fs.Room(context.Background(), room.ID); err != nil {
 		t.Fatalf("room not persisted: %v", err)
 	}
 
-	// Simulate host leave: remove the room.
 	hub.remove(room.ID)
 
-	// Record gone from store.
 	_, err = fs.Room(context.Background(), room.ID)
 	if !errors.Is(err, ErrRoomNotFound) {
-		t.Fatalf("expected ErrRoomNotFound after host leave, got %v", err)
+		t.Fatalf("expected ErrRoomNotFound after hub.remove, got %v", err)
+	}
+}
+
+// TestHostLeaveWithPersistenceKeepsRoom: when the host disconnects and
+// persistence is enabled, the room record stays in the store so the host can
+// reconnect with the same token. The room is evicted from memory (no guests
+// were connected).
+func TestHostLeaveWithPersistenceKeepsRoom(t *testing.T) {
+	dir := t.TempDir()
+	fs, err := newFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fs.Close()
+	hub := newHubWithStore(fs)
+
+	room, token, err := hub.CreateRoom("", 2)
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+
+	// Simulate host teardown (host leaves, no guests).
+	host := &Client{ID: "HOST01", IsHost: true, Room: room, hub: hub,
+		sendCh: make(chan []byte, 1)}
+	room.hostID = "HOST01"
+	room.clients["HOST01"] = host
+	host.teardown()
+
+	// Room evicted from memory.
+	if r := hub.peekRoom(room.ID); r != nil {
+		t.Fatal("room should be evicted from memory after host leave")
+	}
+	// Room record still in store.
+	rec, err := fs.Room(context.Background(), room.ID)
+	if err != nil {
+		t.Fatalf("room record should survive host leave: %v", err)
+	}
+	// Host token still valid.
+	if !verifyHostToken(token, rec.HostTokenHash) {
+		t.Fatal("host token should still verify after host leave")
+	}
+}
+
+// TestHostReconnectAfterLeave: after the host leaves (with persistence), the
+// host can reconnect to the same room id with the same token, and the room is
+// rehydrated from the store.
+func TestHostReconnectAfterLeave(t *testing.T) {
+	dir := t.TempDir()
+	fs, err := newFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fs.Close()
+	hub := newHubWithStore(fs)
+
+	room, token, err := hub.CreateRoom("s3cret", 3)
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+
+	// Host joins then leaves.
+	host := &Client{ID: "HOST01", IsHost: true, Room: room, hub: hub,
+		sendCh: make(chan []byte, 1)}
+	room.hostID = "HOST01"
+	room.clients["HOST01"] = host
+	host.teardown()
+
+	// Room is gone from memory but in store. Re-lookup rehydrates it.
+	r := hub.Room(room.ID)
+	if r == nil {
+		t.Fatal("room should be rehydrated from store")
+	}
+	if r.Password != "s3cret" || r.MaxClients != 3 {
+		t.Fatalf("rehydrated room mismatch: password=%q max=%d", r.Password, r.MaxClients)
+	}
+	if r.hostID != "" {
+		t.Fatalf("hostID should be empty after rehydration, got %q", r.hostID)
+	}
+
+	// Host can re-admit with the original token.
+	host2 := &Client{hub: hub, sendCh: make(chan []byte, 1)}
+	peerID, _, err := r.Admit(host2, token, "")
+	if err != nil {
+		t.Fatalf("host re-admit failed: %v", err)
+	}
+	if peerID == "" {
+		t.Fatal("host re-admit returned empty peer id")
+	}
+	if r.hostID != peerID {
+		t.Fatalf("hostID should be %q after re-admit, got %q", peerID, r.hostID)
+	}
+}
+
+// TestHostLeaveWithPersistenceGuestsStay: when the host disconnects with
+// persistence enabled and guests are still connected, the room stays alive in
+// memory, guests receive peer-left, and the host can reconnect.
+func TestHostLeaveWithPersistenceGuestsStay(t *testing.T) {
+	dir := t.TempDir()
+	fs, err := newFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fs.Close()
+	hub := newHubWithStore(fs)
+
+	room, token, err := hub.CreateRoom("", 3)
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+
+	// Set up host + guest in the room.
+	host := &Client{ID: "HOST01", IsHost: true, Room: room, hub: hub,
+		sendCh: make(chan []byte, 1)}
+	guest := &Client{ID: "GUEST1", Room: room, hub: hub,
+		sendCh: make(chan []byte, 1)}
+	room.hostID = "HOST01"
+	room.clients["HOST01"] = host
+	room.clients["GUEST1"] = guest
+
+	// Host leaves.
+	host.teardown()
+
+	// Guest should have received peer-left for the host.
+	select {
+	case raw := <-guest.sendCh:
+		var msg ServerOut
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if msg.Type != "peer-left" || msg.PeerID != "HOST01" {
+			t.Fatalf("expected peer-left HOST01, got %+v", msg)
+		}
+	default:
+		t.Fatal("guest should have received peer-left")
+	}
+
+	// Room should still be in memory (guest is still connected).
+	if r := hub.peekRoom(room.ID); r == nil {
+		t.Fatal("room should stay in memory when guests are connected")
+	}
+	// hostID should be cleared.
+	if room.hostID != "" {
+		t.Fatalf("hostID should be cleared, got %q", room.hostID)
+	}
+	// Guest should still be in the room.
+	if _, ok := room.clients["GUEST1"]; !ok {
+		t.Fatal("guest should still be in room")
+	}
+
+	// Host reconnects with the same token.
+	host2 := &Client{hub: hub, sendCh: make(chan []byte, 1)}
+	peerID, existing, err := room.Admit(host2, token, "")
+	if err != nil {
+		t.Fatalf("host reconnect failed: %v", err)
+	}
+	if peerID == "" {
+		t.Fatal("reconnect returned empty peer id")
+	}
+	// Host should see the guest in existing peers.
+	if len(existing) != 1 || existing[0] != "GUEST1" {
+		t.Fatalf("host should see [GUEST1] as existing peers, got %v", existing)
+	}
+}
+
+// TestLastGuestLeavesAfterHostDestroysRoom: when the host has already left
+// (with persistence) and the last guest leaves, the room is fully destroyed
+// (memory + store).
+func TestLastGuestLeavesAfterHostDestroysRoom(t *testing.T) {
+	dir := t.TempDir()
+	fs, err := newFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fs.Close()
+	hub := newHubWithStore(fs)
+
+	room, _, err := hub.CreateRoom("", 3)
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+
+	// Host + guest in room.
+	host := &Client{ID: "HOST01", IsHost: true, Room: room, hub: hub,
+		sendCh: make(chan []byte, 1)}
+	guest := &Client{ID: "GUEST1", Room: room, hub: hub,
+		sendCh: make(chan []byte, 1)}
+	room.hostID = "HOST01"
+	room.clients["HOST01"] = host
+	room.clients["GUEST1"] = guest
+
+	// Host leaves (room stays alive because guest is connected).
+	host.teardown()
+	// Drain guest's peer-left notification.
+	<-guest.sendCh
+
+	// Last guest leaves.
+	guest.teardown()
+
+	// Room should be gone from memory.
+	if r := hub.peekRoom(room.ID); r != nil {
+		t.Fatal("room should be evicted from memory")
+	}
+	// Room should be gone from store.
+	_, err = fs.Room(context.Background(), room.ID)
+	if !errors.Is(err, ErrRoomNotFound) {
+		t.Fatalf("expected ErrRoomNotFound after last guest left, got %v", err)
 	}
 }
 

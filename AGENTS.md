@@ -39,5 +39,7 @@ gofmt -l . && go vet ./... && go test -race ./...
 ## Key invariants
 - Host must connect first. Host is authenticated by `host_token` (from `POST /v1/rooms`) and is exempt from the room password.
 - Guests authenticate with the room `password` (only if the room set one).
-- Host departure destroys the room and notifies all remaining peers with `peer-left`.
+- Host departure behavior depends on persistence:
+  - Without persistence (default): room is destroyed, all peers get `peer-left`.
+  - With persistence (`--store-dir`): room stays alive, host can reconnect with the same `host_token`. Room is only destroyed when all peers have left.
 - Signaling messages are addressed peer-to-peer via `to` (client→server) and `from` (server→client); the server never inspects SDP/ICE contents.

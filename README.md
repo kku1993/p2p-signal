@@ -21,7 +21,7 @@ connections.
 | `client.go`       | `Client`: WebSocket read/write pumps, relay, teardown. |
 | `protocol.go`     | JSON message structs for both directions.            |
 | `server_test.go`  | End-to-end tests (basic flow, password, max clients, host ordering, departure). |
-| `PROTOCOL.md`     | Full communication protocol spec for clients/agents. |
+| `docs/PROTOCOL.md`| Full communication protocol spec for clients/agents. |
 
 ## Build & run
 
@@ -88,5 +88,5 @@ it for real:
 
 ## Protocol
 
-See [PROTOCOL.md](./PROTOCOL.md) for the complete, machine-implementation-ready
+See [docs/PROTOCOL.md](./docs/PROTOCOL.md) for the complete, machine-implementation-ready
 specification of the HTTP and WebSocket protocol.

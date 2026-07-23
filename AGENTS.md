@@ -34,7 +34,7 @@ gofmt -l . && go vet ./... && go test -race ./...
 - `client.go` — per-connection read/write pumps; relay of offer/answer/ice by peer id; teardown with peer-left broadcast.
 - `protocol.go` — JSON message structs.
 - `store.go` — generic `Store` interface for durable room metadata, with a `fileStore` implementation (one JSON file per room). Pluggable: alternative backends just implement the interface.
-- `PROTOCOL.md` — the wire protocol contract; update it whenever the protocol changes.
+- `docs/PROTOCOL.md` — the wire protocol contract; update it whenever the protocol changes.
 
 ## Key invariants
 - Host must connect first. Host is authenticated by `host_token` (from `POST /v1/rooms`) and is exempt from the room password.

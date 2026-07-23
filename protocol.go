@@ -19,7 +19,7 @@ type ServerOut struct {
 	Type      string   `json:"type"`              // see PROTOCOL.md
 	Room      string   `json:"room,omitempty"`    // room id
 	PeerID    string   `json:"peer_id,omitempty"` // this client's peer id
-	Peers     []string `json:"peers,omitempty"`   // existing peer ids (in "joined")
+	Peers     []string `json:"peers"`             // existing peer ids (in "joined")
 	From      string   `json:"from,omitempty"`    // originator peer id (relayed msgs)
 	To        string   `json:"to,omitempty"`      // target peer id (relayed msgs)
 	SDP       any      `json:"sdp,omitempty"`

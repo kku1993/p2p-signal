@@ -232,8 +232,10 @@ are sent to remaining peers.
 ```
 
 `peer_id` is this client's own id within the room. `peers` is the list of peer
-ids **already present** in the room (empty for the host, since the host is
-first). For a 2-party room the guest receives `peers: ["<host-id>"]`.
+ids **already present** in the room. It is always an array (never omitted or
+`null`): it is `[]` for the host, since the host is first, and
+`["<host-id>"]` for the first guest in a 2-party room. Clients may iterate over
+it without a nil/undefined guard.
 
 #### `peer-joined` — a new peer joined the room
 

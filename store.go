@@ -19,12 +19,19 @@ var ErrRoomNotFound = errors.New("room not found")
 // re-admit a host after a server restart. It does not include transient state
 // (connected clients, current host peer id) — only the facts that must survive
 // a crash.
+//
+// PasswordHash is the hex SHA-256 digest of the room password (empty = no
+// password); the plaintext password is never persisted. LastActive and
+// HostJoined drive the TTL/idle janitor (see Hub.evictExpired and
+// Hub.recordExpired).
 type RoomRecord struct {
 	ID            string    `json:"id"`
-	Password      string    `json:"password,omitempty"`
+	PasswordHash  string    `json:"password_hash,omitempty"`
 	MaxClients    int       `json:"max_clients"`
 	HostTokenHash string    `json:"host_token_hash"`
 	CreatedAt     time.Time `json:"created_at"`
+	LastActive    time.Time `json:"last_active"`
+	HostJoined    bool      `json:"host_joined,omitempty"`
 }
 
 // Store is a durable registry of room metadata. Implementations must be safe

@@ -63,7 +63,7 @@ go test -race ./...
 ## Production deployment
 
 This is a stateful service: each `Room` (and its connected peers) lives in the
-memory of exactly one server process. Two things to keep in mind when running
+memory of exactly one server process. A few things to keep in mind when running
 it for real:
 
 - **Use disk persistence.** Start the server with `--store-dir` (or
@@ -75,6 +75,22 @@ it for real:
   ```
   When using the Docker image, mount a volume at `/var/lib/p2p-signal` and set
   `SIGNALING_STORE_DIR=/var/lib/p2p-signal`.
+
+- **Tune the DoS/abuse limits.** Room creation is per-IP rate limited
+  (`--room-create-rate`/`--room-create-burst`) and globally capped
+  (`--max-rooms`); `max_clients` is clamped to `--max-clients-limit` (default
+  16); the `POST /v1/rooms` body is size-capped. Room passwords are stored
+  only as SHA-256 digests and compared in constant time.
+
+- **Rooms expire.** A background janitor evicts rooms whose host never joined
+  within `--room-host-grace` (default 15m) and rooms idle (no connected peers)
+  for longer than `--room-idle-timeout` (default 4h), from memory and the
+  store. This prevents "created but never joined" rooms from leaking forever.
+
+- **Health & readiness endpoints.** `GET /healthz` (liveness) and
+  `GET /readyz` (readiness; returns 503 during shutdown) are available for
+  load balancers and orchestrators. On `SIGINT`/`SIGTERM` the server drains
+  in-flight connections via `http.Server.Shutdown` instead of dropping them.
 
 - **Horizontal scaling requires session affinity.** Because room state is
   in-process, all peers of a room must land on the same instance. Put the

@@ -59,9 +59,15 @@ Key properties:
 - By default the server keeps all state in memory for the lifetime of the room.
   When optional persistent storage is enabled (see
   [Configuration & deployment](#configuration--deployment)), room metadata
-  (id, password, max_clients, host-token hash) is written to disk so a host can
-  reconnect to the same room id with its original host token after a server
-  crash, restart, or graceful disconnect.
+  (id, password hash, max_clients, host-token hash, creation/last-active
+  timestamps) is written to disk so a host can reconnect to the same room id
+  with its original host token after a server crash, restart, or graceful
+  disconnect.
+- Rooms have a TTL: a room whose host never joins within the configured
+  `--room-host-grace`, or that has no connected peers for longer than
+  `--room-idle-timeout`, is evicted from memory and the store by a background
+  janitor (and lazily on lookup). See
+  [Configuration & deployment](#configuration--deployment).
 
 ## Transport
 
@@ -124,9 +130,11 @@ unprotected room. `max_clients` values `< 2` are coerced up to `2`.
 
 | Status | Cause                                   |
 |--------|-----------------------------------------|
-| `400`  | Malformed JSON body.                    |
+| `400`  | Malformed JSON body, oversized body, or `password` too long. |
 | `405`  | Non-POST method.                        |
+| `429`  | Per-IP room-creation rate limit exceeded. |
 | `500`  | Could not allocate a unique room id.    |
+| `503`  | Global room cap (`--max-rooms`) reached. |
 
 The `room_id` is 5 characters from the alphabet `ABCDEFGHJKMNPQRSTUVWXYZ23456789`
 (no `0`/`O`/`1`/`I`/`L` to avoid ambiguity when read aloud). The `host_token` is
@@ -137,6 +145,14 @@ hex-encoded SHA-256 digest of the token and verifies presented tokens with a
 constant-time comparison, so a process memory dump cannot reveal usable tokens.
 The plaintext token is returned exactly once, in this response, and must be
 kept by the host.
+
+The `password` is treated the same way: only its hex-encoded SHA-256 digest is
+stored (in memory and, with persistence, on disk) and verified with a
+constant-time comparison. The plaintext password is never retained by the
+server beyond the request that supplied it. `max_clients` is clamped to
+`--max-clients-limit` (default 16) and floored at 2. The request body is capped
+(see [Limits & defaults](#limits--defaults)); an oversized body or password is
+rejected with `400`.
 
 ### `GET /v1/ws/<room-id>` — open a WebSocket
 
@@ -173,6 +189,17 @@ sent an `error` message and closed with code `1008`; see [Close codes](#close-co
 
 On success, the server immediately sends a `joined` message (see below) and
 broadcasts `peer-joined` to all existing peers.
+
+### `GET /healthz` and `GET /readyz` — health & readiness probes
+
+`GET /healthz` returns `200 ok` as long as the process is up and serving. It is
+a liveness probe for orchestrators.
+
+`GET /readyz` returns `200 ok` while the server is accepting traffic, and
+`503 shutting down` once a graceful shutdown has begun (the ready flag is
+cleared on `SIGINT`/`SIGTERM` before in-flight connections are drained). Use it
+as a readiness probe so a load balancer stops routing to a pod that is
+shutting down.
 
 ## WebSocket protocol
 
@@ -388,10 +415,16 @@ with `peer-left`.
 
 ## Configuration & deployment
 
-| Setting        | Flag          | Env var                | Default             |
-|----------------|---------------|------------------------|---------------------|
-| Listen address | `--addr`      | `SIGNALING_ADDR`       | `:4000`             |
-| Store directory| `--store-dir` | `SIGNALING_STORE_DIR`  | `""` (in-memory)    |
+| Setting                | Flag                    | Env var                       | Default             |
+|------------------------|-------------------------|-------------------------------|---------------------|
+| Listen address         | `--addr`                | `SIGNALING_ADDR`              | `:4000`             |
+| Store directory        | `--store-dir`           | `SIGNALING_STORE_DIR`         | `""` (in-memory)    |
+| Max live rooms         | `--max-rooms`           | `SIGNALING_MAX_ROOMS`         | `10000` (`0` = unlimited) |
+| Max clients per room   | `--max-clients-limit`   | `SIGNALING_MAX_CLIENTS_LIMIT` | `16` (`0` = unlimited) |
+| Room-create rate (per IP) | `--room-create-rate` | —                             | `0.2` tokens/sec (`0` = no limit) |
+| Room-create burst (per IP)| `--room-create-burst`| —                             | `5`                 |
+| Room host grace        | `--room-host-grace`     | —                             | `15m` (`0` = disabled) |
+| Room idle timeout      | `--room-idle-timeout`   | —                             | `4h` (`0` = disabled) |
 
 Build and run:
 
@@ -401,6 +434,28 @@ go build -o p2p-signal .
 # or
 SIGNALING_ADDR=:4000 ./p2p-signal
 ```
+
+### Room TTL / idle janitor
+
+Rooms are not kept forever. A background janitor (running every minute) evicts
+rooms that have no connected peers and meet either condition:
+
+- The host never joined within `--room-host-grace` of creation (catches
+  "created but abandoned" rooms that would otherwise leak memory and disk).
+- The room has been idle (no connected peers) for longer than
+  `--room-idle-timeout` (catches rooms left after everyone disconnected).
+
+Evicted rooms are removed from memory and, when persistence is enabled, from
+the store. Persisted records are also lazily evicted on lookup, so an expired
+room that is not in memory is still reaped when a client tries to connect to
+it. Set either duration to `0` to disable that rule.
+
+### Graceful shutdown
+
+On `SIGINT`/`SIGTERM` the server clears its readiness flag (so `/readyz`
+returns `503`), stops the janitor, and calls `http.Server.Shutdown` with a
+10-second deadline. In-flight HTTP requests finish and WebSocket connections
+are drained rather than abruptly reset.
 
 ### Persistent storage
 
@@ -450,6 +505,14 @@ send buffer fills (the message is dropped, not the connection).
 | Room id length              | 5 chars    |
 | Peer id length              | 6 chars    |
 | Host token length           | 64 hex chars (256-bit); stored as SHA-256 digest |
+| Room password               | stored as SHA-256 digest; max 1024 chars at creation |
+| Max POST /v1/rooms body     | 16 KiB     |
+| Max live rooms              | 10000 (`--max-rooms`) |
+| Max clients per room        | 16 (`--max-clients-limit`) |
+| Room-create rate            | 0.2 tokens/sec per IP, burst 5 (`--room-create-rate`/`--room-create-burst`) |
+| Room host grace             | 15m (`--room-host-grace`) |
+| Room idle timeout           | 4h (`--room-idle-timeout`) |
+| Shutdown drain timeout      | 10 s       |
 
 ## Reference client pseudocode
 

@@ -27,10 +27,11 @@ func TestFileStoreSaveLoadDelete(t *testing.T) {
 
 	rec := &RoomRecord{
 		ID:            "K7Q2P",
-		Password:      "s3cret",
+		PasswordHash:  hashPassword("s3cret"),
 		MaxClients:    3,
 		HostTokenHash: hashToken("abc"),
 		CreatedAt:     time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+		LastActive:    time.Date(2025, 1, 1, 0, 5, 0, 0, time.UTC),
 	}
 	if err := fs.SaveRoom(ctx, rec); err != nil {
 		t.Fatalf("SaveRoom: %v", err)
@@ -40,7 +41,7 @@ func TestFileStoreSaveLoadDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Room: %v", err)
 	}
-	if got.ID != rec.ID || got.Password != rec.Password ||
+	if got.ID != rec.ID || got.PasswordHash != rec.PasswordHash ||
 		got.MaxClients != rec.MaxClients || got.HostTokenHash != rec.HostTokenHash {
 		t.Fatalf("roundtrip mismatch:\n got  %+v\n want %+v", got, rec)
 	}
@@ -49,13 +50,13 @@ func TestFileStoreSaveLoadDelete(t *testing.T) {
 	}
 
 	// Overwrite.
-	rec.Password = "newpass"
+	rec.PasswordHash = hashPassword("newpass")
 	if err := fs.SaveRoom(ctx, rec); err != nil {
 		t.Fatalf("SaveRoom overwrite: %v", err)
 	}
 	got, _ = fs.Room(ctx, "K7Q2P")
-	if got.Password != "newpass" {
-		t.Fatalf("overwrite failed: %v", got.Password)
+	if got.PasswordHash != hashPassword("newpass") {
+		t.Fatalf("overwrite failed: %v", got.PasswordHash)
 	}
 
 	// Delete.
@@ -152,8 +153,8 @@ func TestRoomPersistsAcrossRestart(t *testing.T) {
 	if r == nil {
 		t.Fatal("room not rehydrated from store")
 	}
-	if r.Password != "s3cret" || r.MaxClients != 3 {
-		t.Fatalf("rehydrated room mismatch: password=%q max=%d", r.Password, r.MaxClients)
+	if r.PasswordHash != hashPassword("s3cret") || r.MaxClients != 3 {
+		t.Fatalf("rehydrated room mismatch: password_hash=%q max=%d", r.PasswordHash, r.MaxClients)
 	}
 	// The original host token must still verify.
 	if !verifyHostToken(token, r.HostTokenHash) {
@@ -259,8 +260,8 @@ func TestHostReconnectAfterLeave(t *testing.T) {
 	if r == nil {
 		t.Fatal("room should be rehydrated from store")
 	}
-	if r.Password != "s3cret" || r.MaxClients != 3 {
-		t.Fatalf("rehydrated room mismatch: password=%q max=%d", r.Password, r.MaxClients)
+	if r.PasswordHash != hashPassword("s3cret") || r.MaxClients != 3 {
+		t.Fatalf("rehydrated room mismatch: password_hash=%q max=%d", r.PasswordHash, r.MaxClients)
 	}
 	if r.hostID != "" {
 		t.Fatalf("hostID should be empty after rehydration, got %q", r.hostID)
@@ -426,10 +427,3 @@ func (failingStore) DeleteRoom(context.Context, string) error { return nil }
 func (failingStore) Close() error                             { return nil }
 
 var errStoreFail = errors.New("simulated store failure")
-
-// peekRoom returns the in-memory room without consulting the store.
-func (h *Hub) peekRoom(id string) *Room {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return h.rooms[id]
-}

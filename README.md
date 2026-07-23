@@ -60,6 +60,32 @@ runtime image contains no OS, shell, or glibc and runs as a non-root user
 go test -race ./...
 ```
 
+## Production deployment
+
+This is a stateful service: each `Room` (and its connected peers) lives in the
+memory of exactly one server process. Two things to keep in mind when running
+it for real:
+
+- **Use disk persistence.** Start the server with `--store-dir` (or
+  `SIGNALING_STORE_DIR`) so room metadata survives process restarts and
+  crashes. Without it, an in-flight room is lost the moment the process exits
+  and peers cannot reconnect.
+  ```bash
+  ./p2p-signal --addr :4000 --store-dir /var/lib/p2p-signal
+  ```
+  When using the Docker image, mount a volume at `/var/lib/p2p-signal` and set
+  `SIGNALING_STORE_DIR=/var/lib/p2p-signal`.
+
+- **Horizontal scaling requires session affinity.** Because room state is
+  in-process, all peers of a room must land on the same instance. Put the
+  instances behind a load balancer and route by **consistent hashing** keyed on
+  the room id. Use a **cookie-based** or **URL-path-based** affinity policy —
+  not a custom header. The browser WebSocket API (`new WebSocket(url)`) cannot
+  set arbitrary headers, so any header-based affinity scheme will not work for
+  the WebSocket upgrade request. With cookie/URL-path affinity, both the
+  `POST /v1/rooms` call and the subsequent `GET /v1/ws/<room-id>` upgrade are
+  pinned to the same instance, keeping the room's peers together.
+
 ## Protocol
 
 See [PROTOCOL.md](./PROTOCOL.md) for the complete, machine-implementation-ready

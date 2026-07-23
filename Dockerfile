@@ -10,10 +10,11 @@ RUN go mod download
 
 COPY . .
 
-# Static, stripped binary: CGO disabled so no glibc dependency.
+# Stamp the version from the VERSION file into the binary.
+# VERSION is expected to contain a MAJOR.MINOR string.
 RUN CGO_ENABLED=0 GOOS=linux go build \
         -trimpath \
-        -ldflags="-s -w" \
+        -ldflags="-s -w -X main.version=$(cat VERSION | tr -d '[:space:]')" \
         -o /out/p2p-signal .
 
 # --- runtime stage ---

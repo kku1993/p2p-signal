@@ -3,7 +3,8 @@
 ## Build
 ```bash
 go build ./...
-# binary: go build -o p2p-signal .
+# binary with version stamped from VERSION file:
+go build -ldflags "-X main.version=$(cat VERSION | tr -d '[:space:]')" -o p2p-signal .
 ```
 
 ## Test

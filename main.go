@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -24,7 +25,12 @@ var upgrader = websocket.Upgrader{
 
 func main() {
 	addr := flag.String("addr", ":4000", "listen address")
+	showVersion := flag.Bool("version", false, "print server version and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println(version)
+		return
+	}
 	if env := os.Getenv("SIGNALING_ADDR"); env != "" {
 		*addr = env
 	}
@@ -34,9 +40,15 @@ func main() {
 	mux.HandleFunc("/v1/rooms", handleCreateRoom(hub))
 	mux.HandleFunc("/v1/ws/", handleWS(hub))
 
+	// Wrap the mux so every response carries the server version header.
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-P2P-Signal-Server-Version", version)
+		mux.ServeHTTP(w, r)
+	})
+
 	srv := &http.Server{
 		Addr:              *addr,
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

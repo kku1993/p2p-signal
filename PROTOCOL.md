@@ -53,8 +53,13 @@ Key properties:
   `>= 2` value).
 - The host must be the first peer to connect. When the host disconnects, the
   room is destroyed and all remaining peers are notified.
-- The server keeps no persistent state; everything lives in memory for the
-  lifetime of the room.
+- By default the server keeps all state in memory for the lifetime of the room.
+  When optional persistent storage is enabled (see
+  [Configuration & deployment](#configuration--deployment)), room metadata
+  (id, password, max_clients, host-token hash) is written to disk so a host can
+  reconnect to the same room id with its original host token after a server
+  crash or restart. Intentional host departure still destroys the room
+  permanently.
 
 ## Transport
 
@@ -369,9 +374,10 @@ with `peer-left`.
 
 ## Configuration & deployment
 
-| Setting        | Flag      | Env var          | Default |
-|----------------|-----------|------------------|---------|
-| Listen address | `--addr`  | `SIGNALING_ADDR` | `:4000` |
+| Setting        | Flag          | Env var                | Default             |
+|----------------|---------------|------------------------|---------------------|
+| Listen address | `--addr`      | `SIGNALING_ADDR`       | `:4000`             |
+| Store directory| `--store-dir` | `SIGNALING_STORE_DIR`  | `""` (in-memory)    |
 
 Build and run:
 
@@ -381,6 +387,34 @@ go build -o p2p-signal .
 # or
 SIGNALING_ADDR=:4000 ./p2p-signal
 ```
+
+### Persistent storage
+
+By default the server is stateless: all room state lives in memory and is lost
+on crash or restart. To enable crash recovery, point the server at a writable
+directory:
+
+```bash
+./p2p-signal --store-dir /var/lib/p2p-signal
+# or
+SIGNALING_STORE_DIR=/var/lib/p2p-signal ./p2p-signal
+```
+
+When a store directory is configured:
+
+- Each room is persisted as a JSON file (`<id>.json`) in the directory.
+- After a crash or restart, a host can reconnect to the same room id with its
+  original `host_token`. The server rehydrates the room from disk on first
+  access.
+- Guests can then join as usual once the host has reconnected.
+- Intentional host departure (graceful disconnect) still destroys the room and
+  deletes the persisted record.
+- Existing WebRTC connections between peers are unaffected by a signaling
+  server restart; persistence only matters for re-admission and new joins.
+
+The store is implemented behind a generic `Store` interface
+(`SaveRoom` / `Room` / `DeleteRoom` / `Close`), so alternative backends (e.g.
+SQL, Redis, S3) can be added without changing the Hub or HTTP layer.
 
 The server logs to stdout: a `listening on :PORT` line at startup, `read error`
 lines on abnormal disconnects, and `dropping message` lines if a slow peer's

@@ -25,6 +25,7 @@ var upgrader = websocket.Upgrader{
 
 func main() {
 	addr := flag.String("addr", ":4000", "listen address")
+	storeDir := flag.String("store-dir", "", "directory for persistent room storage (empty = in-memory only)")
 	showVersion := flag.Bool("version", false, "print server version and exit")
 	flag.Parse()
 	if *showVersion {
@@ -34,8 +35,22 @@ func main() {
 	if env := os.Getenv("SIGNALING_ADDR"); env != "" {
 		*addr = env
 	}
+	if env := os.Getenv("SIGNALING_STORE_DIR"); env != "" {
+		*storeDir = env
+	}
 
-	hub := newHub()
+	var hub *Hub
+	if *storeDir != "" {
+		fs, err := newFileStore(*storeDir)
+		if err != nil {
+			log.Fatalf("[signaling] open store: %v", err)
+		}
+		defer fs.Close()
+		hub = newHubWithStore(fs)
+		log.Printf("[signaling] persisting rooms to %s", *storeDir)
+	} else {
+		hub = newHub()
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/rooms", handleCreateRoom(hub))
 	mux.HandleFunc("/v1/ws/", handleWS(hub))

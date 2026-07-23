@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"fmt"
+	"log"
 	"sync"
+	"time"
 )
 
 // Alphabet without ambiguous characters (no 0/O/1/I/L), matching the original
@@ -23,10 +27,20 @@ const (
 type Hub struct {
 	mu    sync.RWMutex
 	rooms map[string]*Room
+	store Store // optional durable store; nil = in-memory only
 }
 
 func newHub() *Hub {
 	return &Hub{rooms: make(map[string]*Room)}
+}
+
+// newHubWithStore returns a Hub backed by the given durable store. Rooms
+// created through this hub are persisted, and rooms that existed before a
+// restart are rehydrated on demand when looked up by id.
+func newHubWithStore(s Store) *Hub {
+	h := newHub()
+	h.store = s
+	return h
 }
 
 // CreateRoom allocates a new room with a unique id and host token. It returns
@@ -61,24 +75,81 @@ func (h *Hub) CreateRoom(password string, maxClients int) (*Room, string, error)
 		}
 		h.rooms[id] = r
 		h.mu.Unlock()
+
+		// Persist before returning success so a crash after the host receives
+		// the room id + token does not lose the room. On failure, roll back the
+		// in-memory room.
+		if h.store != nil {
+			rec := &RoomRecord{
+				ID:            r.ID,
+				Password:      r.Password,
+				MaxClients:    r.MaxClients,
+				HostTokenHash: r.HostTokenHash,
+				CreatedAt:     time.Now().UTC(),
+			}
+			if err := h.store.SaveRoom(context.Background(), rec); err != nil {
+				h.mu.Lock()
+				delete(h.rooms, id)
+				h.mu.Unlock()
+				return nil, "", fmt.Errorf("persist room %s: %w", id, err)
+			}
+		}
 		return r, token, nil
 	}
 	return nil, "", errRoomCollision
 }
 
 // Room returns the room with the given id, or nil if it does not exist.
+//
+// If the room is not in memory but a Store is configured, the store is
+// consulted and the room is rehydrated (with no connected clients) so a host
+// can reconnect with its original token after a server restart.
 func (h *Hub) Room(id string) *Room {
 	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return h.rooms[id]
+	r := h.rooms[id]
+	h.mu.RUnlock()
+	if r != nil {
+		return r
+	}
+	if h.store == nil {
+		return nil
+	}
+	rec, err := h.store.Room(context.Background(), id)
+	if err != nil || rec == nil {
+		return nil
+	}
+	r = &Room{
+		ID:            rec.ID,
+		Password:      rec.Password,
+		MaxClients:    rec.MaxClients,
+		HostTokenHash: rec.HostTokenHash,
+		clients:       make(map[string]*Client),
+	}
+	h.mu.Lock()
+	// Re-check under write lock: another goroutine may have rehydrated the
+	// same room concurrently.
+	if existing, ok := h.rooms[id]; ok {
+		h.mu.Unlock()
+		return existing
+	}
+	h.rooms[id] = r
+	h.mu.Unlock()
+	return r
 }
 
-// remove deletes a room from the hub if it has no clients. Called with the
-// room's own lock held is fine because we only touch the hub map here.
+// remove deletes a room from the hub and, if a store is configured, from
+// durable storage. Called with the room's own lock held is fine because we only
+// touch the hub map here. Store I/O is done after releasing the hub lock to
+// avoid blocking other room operations.
 func (h *Hub) remove(id string) {
 	h.mu.Lock()
 	delete(h.rooms, id)
 	h.mu.Unlock()
+	if h.store != nil {
+		if err := h.store.DeleteRoom(context.Background(), id); err != nil {
+			log.Printf("[signaling] delete persisted room %s: %v", id, err)
+		}
+	}
 }
 
 // Room is a signaling room hosting up to MaxClients peers.

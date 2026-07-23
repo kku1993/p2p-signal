@@ -27,5 +27,9 @@ USER 65532:65532
 
 EXPOSE 4000
 
+# Default volume for persistent room storage when --store-dir is used.
+# Mount a writable volume here to enable crash recovery.
+VOLUME ["/var/lib/p2p-signal"]
+
 ENTRYPOINT ["/p2p-signal"]
 CMD ["--addr", ":4000"]

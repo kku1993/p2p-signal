@@ -16,6 +16,10 @@ go test -race ./...
 ```bash
 ./p2p-signal --addr :4000
 # or: SIGNALING_ADDR=:4000 ./p2p-signal
+
+# with persistent room storage (crash recovery):
+./p2p-signal --addr :4000 --store-dir /var/lib/p2p-signal
+# or: SIGNALING_STORE_DIR=/var/lib/p2p-signal ./p2p-signal
 ```
 
 ## Verify before committing
@@ -29,6 +33,7 @@ gofmt -l . && go vet ./... && go test -race ./...
 - `hub.go` — `Hub` (room registry) and `Room` (peer set, password, max_clients, host token). All concurrency-safe.
 - `client.go` — per-connection read/write pumps; relay of offer/answer/ice by peer id; teardown with peer-left broadcast.
 - `protocol.go` — JSON message structs.
+- `store.go` — generic `Store` interface for durable room metadata, with a `fileStore` implementation (one JSON file per room). Pluggable: alternative backends just implement the interface.
 - `PROTOCOL.md` — the wire protocol contract; update it whenever the protocol changes.
 
 ## Key invariants

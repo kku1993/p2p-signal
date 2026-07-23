@@ -33,6 +33,28 @@ go build -o p2p-signal .
 SIGNALING_ADDR=:4000 ./p2p-signal
 ```
 
+## Docker
+
+Build a small static image (multi-stage build → `scratch` runtime, ~9 MB):
+
+```bash
+docker build -t p2p-signal .
+```
+
+Run (exposes port 4000 by default):
+
+```bash
+docker run --rm -p 4000:4000 p2p-signal
+# or override the listen address:
+docker run --rm -p 8080:8080 p2p-signal --addr :8080
+# or via the SIGNALING_ADDR env var:
+docker run --rm -p 8080:8080 -e SIGNALING_ADDR=:8080 p2p-signal
+```
+
+The binary is built with `CGO_ENABLED=0` and `-ldflags="-s -w"`, so the
+runtime image contains no OS, shell, or glibc and runs as a non-root user
+(UID 65532).
+
 ## Test
 
 ```bash
